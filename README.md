@@ -1,7 +1,15 @@
 # Prompting Language-Informed Distribution (PLID)
-[ECCV 2024] [Prompting Language-Informed Distribution for Compositional Zero-Shot Learning](https://arxiv.org/pdf/2305.14428)
+[ECCV 2024] [Prompting Language-Informed Distribution for Compositional Zero-Shot Learning](https://arxiv.org/pdf/2305.14428)   
+Authors:
+[Wentao Bao](https://cogito2012.github.io/homepage), 
+[Lichang Chen](https://lichang-chen.github.io),
+[Heng Huang](https://scholar.google.com/citations?user=4OqLaDwAAAAJ&hl=en),
+[Yu Kong](https://www.egr.msu.edu/~yukong)   
+Affiliations:
+Michigan State University, University of Maryland
 
-This repo contains the source code of the above ECCV2024 paper for compositional zero-shot learning (CZSL) tasks. The CZSL task aims to learn from a subset of seen state-object compositions, and recognize both seen and unseen compositions, either in a closed world where the compositional classes are assumed to be feasible, or in an open world where infeasible compositional classes are taken into account in recognition. The figure [CZSL Task](assets/czsl.png) illustrates the CZSL task. Our method **PLID**, based on CLIP model, leverages large-language models (LLM) and Gaussian distributions to formulate informative and diverse prompts for text input.
+
+This repo contains the official source code of the above ECCV2024 paper for compositional zero-shot learning (CZSL) tasks. The CZSL task aims to learn from a subset of seen state-object compositions, and recognize both seen and unseen compositions, either in a closed world where the compositional classes are assumed to be feasible, or in an open world where infeasible compositional classes are taken into account in recognition. The figure [CZSL Task](assets/czsl.png) illustrates the CZSL task. Our method **PLID**, based on CLIP model, leverages large-language models (LLM) and Gaussian distributions to formulate informative and diverse prompts for text input.
 
 ![alt text](assets/plid.png)
 
