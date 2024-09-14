@@ -161,125 +161,6 @@ class CSPCustomInterface(CSPInterface):
         return outputs
 
 
-
-
-class CSP_CVAE_Interface(CSPInterface):
-    def __init__(self, clip_model, config, offset, soft_embeddings, class_token_ids, device="cuda:0", enable_pos_emb=True, attr_dropout=0, vpt=False, is_training=True):
-        super().__init__(clip_model, config, offset, soft_embeddings, class_token_ids, device, enable_pos_emb, attr_dropout, vpt, is_training)
-        dim_in = self.text_encoder.text_projection.size(-1)
-        act_method = getattr(config, 'act', 'relu')
-        act_layer = nn.Tanh() if act_method == 'tanh' else nn.ReLU()
-        self.bn_mean = getattr(config, 'bn_mean', False)
-        self.cond_mode = getattr(config, 'cond_mode', 't2i')  # image reconstruction conditioned on text
-
-        # recognition model (encoder)
-        mlp_xy_h, dim_h = self._build_mlp([dim_in*2] + config.dim_latent[:-1], act_layer, dtype=self.dtype)
-        self.mlp_xy_h = nn.Sequential(mlp_xy_h)
-        self.mlp_h_zmean = nn.Linear(dim_h, config.dim_latent[-1], dtype=self.dtype)
-        self.mlp_h_zvar = nn.Linear(dim_h, config.dim_latent[-1], dtype=self.dtype)
-        if self.bn_mean:
-            self.bn_layer = nn.BatchNorm2d(config.dim_latent[-1], eps=self.eps)
-            self.bn_layer.weight.requires_grad = False
-            self.bn_layer.weight.fill_(0.5)
-
-        # generation model (decoder)
-        dims_latent = config.dim_latent[::-1]
-        mlp_recon, dim_x = self._build_mlp([dim_in + dims_latent[0]] + dims_latent[1:] + [dim_in], act_layer, dtype=self.dtype)
-        if act_method == 'relu': 
-            mlp_recon.pop('act{}'.format(len(dims_latent)-1))
-        self.mlp_recon = nn.Sequential(mlp_recon)
-
-        self.to(self.device)
-
-
-    def _build_mlp(self, layer_dims, act_layer, dtype=torch.float32):
-        layers = OrderedDict()
-        if len(layer_dims) == 1:
-            layers['idty'] = nn.Identity()
-        else:
-            for n, (dim_in, dim_out) in enumerate(zip(layer_dims[:-1], layer_dims[1:])):
-                layers['fc{}'.format(n)] = nn.Linear(dim_in, dim_out, dtype=dtype)
-                layers['act{}'.format(n)] = act_layer
-        return layers, layer_dims[-1]
-    
-
-    def _norm(self, data, dim=-1):
-        return data / data.norm(dim=dim, keepdim=True)
-
-
-    def reparametrization(self, mean, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps * std + mean
-    
-
-    def compute_logits(self, text_feat, img_feat, norm=False):
-        # compute the normalized features
-        text_norm = self._norm(text_feat) if norm else text_feat
-        img_norm = self._norm(img_feat) if norm else img_feat
-        tau_inv = self.clip_model.logit_scale.exp()
-        # inner-product 
-        logits = (
-            tau_inv
-            * img_norm
-            @ text_norm.t()
-        )  # inner product with temperature scaling, (B, K)
-        return logits, tau_inv
-
-
-    def forward(self, batch_img, idx):
-        """ batch_img: (B, D)
-        """
-        # In this step, the text features are created from the UPDATED prompt!
-        token_tensors = self.construct_token_tensors(idx)  # (K, 8, D)
-
-        text_features, _ = self.text_encoder(
-            self.token_ids,
-            token_tensors,
-            enable_pos_emb=self.enable_pos_emb,
-        )  # (K, D)
-
-        img_norm = self._norm(batch_img)  # (B, D)
-        text_norm = self._norm(text_features)  # (K, D)
-        batch_size, num_cls = img_norm.size(0), text_norm.size(0)
-
-        # recognition model (X,Y --> Z)
-        input_xy = torch.concat([img_norm.unsqueeze(1).repeat(1, num_cls, 1),
-                                 text_norm.unsqueeze(0).repeat(batch_size, 1, 1)], dim=-1)  # (B, K, D+D)
-        h = self.mlp_xy_h(input_xy)
-        z_mean = self.mlp_h_zmean(h)
-        z_logvar = self.mlp_h_zvar(h)
-        if self.bn_mean:
-            z_mean_in = z_mean.unsqueeze(1).permute(0, 3, 1, 2).contiguous()
-            z_mean_out = self.bn_layer(z_mean_in)
-            z_mean = z_mean_out.squeeze(2).permute(0, 2, 1).contiguous()
-        
-        # reparametrization
-        zs = self.reparametrization(z_mean, z_logvar)  # (B, K, d)
-
-        if self.cond_mode == 't2i':
-            # generation model (Y,Z --> X)
-            input_yz = torch.concat([text_norm.unsqueeze(0).repeat(batch_size, 1, 1), zs], dim=-1)  # (B, K, D+d)
-            recon = self.mlp_recon(input_yz)  # (B, K, D)
-            src = img_norm.clone()  # (B, D)
-        elif self.cond_mode == 'i2t':
-            # generation model (X,Z --> Y)
-            input_xz = torch.concat([img_norm.unsqueeze(1).repeat(1, num_cls, 1), zs], dim=-1)  # (B, K, D+d)
-            recon = self.mlp_recon(input_xz)  # (B, K, D)
-            src = text_norm.clone()  # (K, D)
-
-        # compute cosine similarities as logits
-        logits, tau_inv = self.compute_logits(text_norm, img_norm, norm=False)
-
-        outputs = {'logits': logits, 
-                   'z_mean': z_mean,
-                   'z_logvar': z_logvar,
-                   'recon': recon,
-                   'src': src,
-                   'tau_inv': tau_inv}
-        return outputs
-
-
 def csp_init(
     train_dataset,
     config,
@@ -339,13 +220,9 @@ def get_csp(train_dataset, config, device, is_training=True):
         offset
     ) = csp_init(train_dataset, config, device)
 
-    with_margin = getattr(config, 'with_margin', False) and config.loss_margin > 0
     with_group = getattr(config, 'with_group', False)
     vpt = getattr(config, 'vpt', False) 
-    with_cvae = getattr(config, 'with_cvae', False)
-    scale_logits = getattr(config, 'loss', 'CELoss') == 'AdaMarginLoss'
-    InterfaceClass = CSPCustomInterface if with_margin or with_group or vpt or scale_logits else CSPInterface
-    if with_cvae: InterfaceClass = CSP_CVAE_Interface
+    InterfaceClass = CSPCustomInterface if with_group or vpt else CSPInterface
     
     interface = InterfaceClass(
         clip_model,

@@ -1,6 +1,6 @@
 dataset: mit-states
 clip_model: ViT-L/14
-ckpt_file: output/mit-states/fullmodel/checkpoints/model_10.pt
+ckpt_file: output/mit-states/fullmodel/checkpoints/best_model.pt
 eval_batch_size: 64
 context_length: 8
 text_db: 'opt_sentences64_all_pairs_open.pkl'

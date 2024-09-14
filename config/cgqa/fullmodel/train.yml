@@ -27,7 +27,7 @@ fusion_factor: beta
 use_attrobj_gauss: True
 w_attr: 0.01
 w_obj: 0.01
-save_path: output/cgqa/fullmodel_tunevit_opt
+save_path: output/cgqa/fullmodel
 save_every_n: 2
 num_workers: 4
 pin_memory: True

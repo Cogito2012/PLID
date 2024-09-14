@@ -18,9 +18,9 @@ if modelname == 'opt':
     from transformers import OPTForCausalLM
 if modelname in ['gpt3', 'gpt3.5']:
     import openai
-    openai.api_key = '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'
+    openai.api_key = 'YOUR_API_KEY'
     from openai import OpenAI
-    client = OpenAI(api_key='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')
+    client = OpenAI(api_key='YOUR_API_KEY')
 if modelname == 'gptj6b':
     from transformers import GPTJForCausalLM
 if modelname == 'mistral7b':  # need at least Python>=3.8 and transformers >= 4.37.2

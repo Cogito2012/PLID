@@ -4,7 +4,6 @@ import clip
 import torch
 import torch.nn as nn
 from models.csp import CSPInterface
-from models.hsic import compute_hsic
 from clip_modules.model_loader import load
 
 import numpy as np
@@ -12,11 +11,7 @@ from tqdm import tqdm
 import re
 import pickle
 from torch.distributions.beta import Beta
-from models.adapters import ViTAdapter, PrimitiveAdapter
-from models.caila_adapters import VisionCaila, TextCaila
-# from models.cross_attn_old import CRAttnBlock, CrossResidualAttentionModel, QuickGELU, Text2ImgFusion
-from models.cross_attn_old import CrossResidualAttentionModel, QuickGELU, Text2ImgFusion
-from models.cross_attn import CLIPTextEncoderBlocks, CLIPViTEncoderBlocks, CRAttnBlock
+from models.cross_attn import CRAttnBlock, CrossResidualAttentionModel, QuickGELU
 
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -56,10 +51,9 @@ class GenCSP(CSPInterface):
         self.tune_vit = getattr(config, 'tune_vit', False)
         self.use_gauss = getattr(config, 'use_gauss', False)
         self.use_attrobj_gauss = getattr(config, 'use_attrobj_gauss', False)
-        self.adapter = getattr(config, 'adapter', None)
+
         self.num_xattn = getattr(config, 'num_xattn', 1)
         self.use_nig = getattr(config, 'use_nig', False)
-        self.multi_path = getattr(config, 'multi_path', False)
         self.rewso = getattr(config, 'rewso', False)
 
         img_dropout = getattr(config, 'img_dropout', 0.0)
@@ -77,9 +71,6 @@ class GenCSP(CSPInterface):
         # learnable parameters
         self.soft_embeddings = soft_att_obj
         self.soft_prompt = soft_prompt
-        if self.multi_path:
-            self.soft_prompt_attr = nn.Parameter(soft_prompt.data).to(device)
-            self.soft_prompt_objs = nn.Parameter(soft_prompt.data).to(device)
         self.sow = [0.1, 0.9] if self.rewso else [1, 1]
 
         prompt_drop = getattr(config, 'prompt_drop', 0.0)
@@ -91,31 +82,13 @@ class GenCSP(CSPInterface):
 
         dropout = getattr(config, 'attn_dropout', 0.)
         fe_arch = getattr(config, 'fe_arch', 'xattn')
-        if fe_arch == 'mlp':
-            self.cross_attention = CrossResidualAttentionModel(*[CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout, return_kv=True, with_attn=False, input_mlp_dim=self.textdb['num_texts']) for _ in range(self.num_xattn)]).to(device)
-        else:
-            if self.textdb is not None and self.num_xattn > 0:
-                # self.cross_attention = CLIPTextEncoderBlocks(self.dim_embed, n_layers=self.num_xattn, arch=config.clip_model).to(device)
-                if self.num_xattn > 1:
-                    self.cross_attention = CrossResidualAttentionModel(*[CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout, return_kv=True) for _ in range(self.num_xattn)]).to(device)
-                else:
-                    self.cross_attention = CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout).to(device)
-                if self.multi_path:
-                    self.cross_attention_att = CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout).to(device)
-                    self.cross_attention_obj = CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout).to(device)
-        
-        if self.adapter:
-            vit = self.clip_model.visual.transformer
-            if self.adapter == 'caila':
-                self.vision_adapter = VisionCaila(vit, adapter_start=0, fusion_start=12, redu_factor=4, has_moa=True, dtype=self.dtype).to(device)
+
+        if self.textdb is not None and self.num_xattn > 0:
+            if self.num_xattn > 1:
+                self.cross_attention = CrossResidualAttentionModel(*[CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout, return_kv=True) for _ in range(self.num_xattn)]).to(device)
             else:
-                adapt_blocks = list(range(len(vit.resblocks)))  # adapt all transformer blocks
-                self.vision_adapter = ViTAdapter(vit, adaptable_blocks=adapt_blocks, dim_r=64, drop=0.5, dtype=self.dtype).to(device)
-        
-        self.t2i = getattr(config, 't2i', 0)
-        if self.t2i > 0:
-            self.t2i_fusion = Text2ImgFusion(clip_model, config.context_length, offset, soft_att_obj.size(0) - offset, class_token_ids).to(device)
-        
+                self.cross_attention = CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout).to(device)
+
         self.with_group = getattr(config, 'with_group', False)
         self.disentangle = getattr(config, 'disentangle', False)
         self.num_aug = getattr(config, 'num_aug', 0)
@@ -129,10 +102,9 @@ class GenCSP(CSPInterface):
                 self.cross_attention_img = CrossResidualAttentionModel(*[CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout, return_kv=True, with_attn=False, input_mlp_dim=self.num_aug) for _ in range(num_vfe)]).to(device)
             else:
                 self.cross_attention_img = CrossResidualAttentionModel(*[CRAttnBlock(self.dim_embed, self.dim_embed // 64, drop=dropout, return_kv=True) for _ in range(num_vfe)]).to(device)
-                # self.cross_attention_img = CLIPViTEncoderBlocks(self.dim_embed, n_layers=self.num_xattn, arch=config.clip_model).to(device)
 
         if self.disentangle:
-            disen_arch = 'caila' if self.adapter == 'caila' else getattr(config, 'disen_arch', 'mlp')
+            disen_arch = getattr(config, 'disen_arch', 'mlp')
             if disen_arch == 'mlp':
                 self.mlp_att = nn.Sequential(nn.Linear(self.dim_embed, self.dim_embed * 4), QuickGELU(),
                                             nn.Dropout(0.1),
@@ -140,10 +112,6 @@ class GenCSP(CSPInterface):
                 self.mlp_obj = nn.Sequential(nn.Linear(self.dim_embed, self.dim_embed * 4), QuickGELU(),
                                             nn.Dropout(0.1),
                                             nn.Linear(self.dim_embed * 4, self.dim_embed)).to(device)
-            elif disen_arch == 'adapter':
-                self.mlp_att = PrimitiveAdapter(self.dim_embed).to(device)
-                self.mlp_obj = PrimitiveAdapter(self.dim_embed).to(device)
-            
             elif disen_arch == 'identity':
                 self.mlp_att, self.mlp_obj = nn.Identity(), nn.Identity()
         
@@ -239,16 +207,10 @@ class GenCSP(CSPInterface):
         x = x.permute(1, 0, 2)  # NLD -> LND
         cls2 = x.size(0)
 
-        if self.adapter:
-            x_patches = self.vision_adapter(x, mode) if self.adapter == 'caila' else self.vision_adapter(x)
-        else:
-            x_patches = self.clip_model.visual.transformer(x)
+        x_patches = self.clip_model.visual.transformer(x)
         
         x = x_patches.permute(1, 0, 2)  # LND -> NLD
-        if self.adapter and self.adapter == 'caila' and mode == 'mixture':
-            x = (x[:, 0, :] + x[:, cls2, :]) / 2  # aggregate attr CLS and obj CLS token features
-        else:
-            x = x[:, 0, :]  # ND
+        x = x[:, 0, :]  # ND
 
         x = self.clip_model.visual.ln_post(x)
         if self.clip_model.visual.proj is not None:
@@ -318,16 +280,6 @@ class GenCSP(CSPInterface):
         for i in range(self.num_objs):
             feats_obj[:, i, :] = features[:, torch.where(obj_idx == i)[0], :].mean(1)
         return feats_att, feats_obj
-    
-
-    def step_dropout(self, text_feat_att, text_feat_obj):
-        """ text_feat_att: (B, D)
-            text_feat_obj: (B, D)
-        """
-        indep = compute_hsic(text_feat_att, text_feat_obj, sigmaX=1, sigmaY=1, norm=True)
-        drop = max(min(500 * indep - 1.0, 0.5), 1e-3)
-        self.prompt_drop.p = drop  # update the dropout rate for prompt part
-        return drop, indep
 
     
     def forward(self, batch_img, idx):
@@ -342,12 +294,8 @@ class GenCSP(CSPInterface):
             self.token_ids,
             token_tensors,
             enable_pos_emb=self.enable_pos_emb,
-            get_feature=(self.t2i > 0),
+            get_feature=False,
         )
-        if self.multi_path:
-            attr_token_tensor, objs_token_tensor, attr_token, objs_token = self.construct_multipath_tokens()
-            text_feat_att, _ = self.text_encoder(attr_token, attr_token_tensor, enable_pos_emb=self.enable_pos_emb)  # (115,D)
-            text_feat_obj, _ = self.text_encoder(objs_token, objs_token_tensor, enable_pos_emb=self.enable_pos_emb)  # (245,D)
 
         scale = self.clip_model.logit_scale.exp()
         text_samples = None
@@ -368,13 +316,6 @@ class GenCSP(CSPInterface):
                 text_features = self.cross_attention(text_features.type(torch.float), text_feat_base.type(torch.float))
                 text_features = text_features.type(self.dtype)  # (K, D)
 
-                if self.multi_path:
-                    attr_feat_base, obj_feat_base = self.decompose_text_base(text_feat_base, idx)
-                    text_feat_att = self.cross_attention_att(text_feat_att.type(torch.float), 
-                                                         attr_feat_base.type(torch.float)).type(self.dtype)  # (115, D)
-                    text_feat_obj = self.cross_attention_obj(text_feat_obj.type(torch.float), 
-                                                         obj_feat_base.type(torch.float)).type(self.dtype)  # (245, D)
-
             if self.use_gauss:
                 text_samples = text_features.unsqueeze(1) + text_feat_base.permute(1, 0, 2).contiguous()  # (K, N, D)
         
@@ -387,28 +328,16 @@ class GenCSP(CSPInterface):
         if self.num_aug > 0:
             # get visual features of all views
             _, num_views, c, h, w = batch_img.size()
-            views_feat, img_ft = self.visual(batch_img.view(-1, c, h, w).type(self.dtype), self.t2i > 0)   ## (BN, 768), (257, BN, 1024)
+            views_feat, img_ft = self.visual(batch_img.view(-1, c, h, w).type(self.dtype), False)   ## (BN, 768), (257, BN, 1024)
             views_feat = views_feat.view(-1, num_views, views_feat.size(-1))
             # cross attention
             visual_res = self.cross_attention_img(views_feat[:, 0].type(torch.float), 
                                                   views_feat[:, 1:].permute(1, 0, 2).contiguous().type(torch.float))
             feat_visual = views_feat[:, 0] + visual_res.type(self.dtype)
-            if self.t2i > 0:
-                num_patches, dim_patches = img_ft.size()[0], img_ft.size()[-1]
-                img_ft =  img_ft.view(num_patches, -1, num_views, dim_patches)[:, :, 0]  # (257, B, 1024), keep the original view
         else:
-            feat_visual, img_ft = self.visual(batch_img.type(self.dtype), self.t2i > 0)   ## (B, 768), (B, 256, 1024)
-
-        if self.t2i > 0:
-            feat_img_fuse, feat_text_fuse = self.t2i_fusion(img_ft, text_ft, idx)
-            feat_visual = self.t2i * feat_visual + (1 - self.t2i) * feat_img_fuse
-            text_features = self.t2i * text_features + (1 - self.t2i) * feat_text_fuse
+            feat_visual, img_ft = self.visual(batch_img.type(self.dtype), False)   ## (B, 768), (B, 256, 1024)
         
         # aggregate text features of attr & objs
-        if self.multi_path:
-            attr_idx, obj_idx = idx[:, 0], idx[:, 1]
-            text_features = torch.stack([text_features, text_feat_att[attr_idx], text_feat_obj[obj_idx]], dim=-1).mean(dim=-1)
-        
         if not self.no_comp:
             logits = self.compute_logits(text_features, feat_visual, scale, norm=True, droplayer=self.img_dropout_layer)
             outputs.update({'logits': logits})
@@ -422,16 +351,10 @@ class GenCSP(CSPInterface):
         
         if self.disentangle:
             # decompose text and visual features of attributes and objects
-            if not self.multi_path:
-                text_feat_att, text_feat_obj = self.decompose_texts(text_features, idx)
-            
-            if self.adapter and self.adapter == 'caila':
-                input_img = batch_img[:, 0].view(-1, c, h, w) if self.num_aug > 0 else batch_img
-                vis_feat_att, _ = self.visual(input_img.type(self.dtype), mode='attr')
-                vis_feat_obj, _ = self.visual(input_img.type(self.dtype), mode='obj')
-            else:
-                vis_feat_att = self.mlp_att(feat_visual.type(torch.float))
-                vis_feat_obj = self.mlp_obj(feat_visual.type(torch.float))
+            text_feat_att, text_feat_obj = self.decompose_texts(text_features, idx)
+        
+            vis_feat_att = self.mlp_att(feat_visual.type(torch.float))
+            vis_feat_obj = self.mlp_obj(feat_visual.type(torch.float))
             # compute cosine similarity logits
             logits_att = self.compute_logits(text_feat_att, vis_feat_att.type(self.dtype), scale, norm=True)
             logits_obj = self.compute_logits(text_feat_obj, vis_feat_obj.type(self.dtype), scale, norm=True)
@@ -451,8 +374,7 @@ class GenCSP(CSPInterface):
                 outputs['logits'] = (1-factor) * outputs['logits'] + factor * logits_comp
             
             if self.use_attrobj_gauss and text_feat_base is not None:
-                if not self.multi_path:
-                    attr_feat_base, obj_feat_base = self.decompose_text_base(text_feat_base, idx)
+                attr_feat_base, obj_feat_base = self.decompose_text_base(text_feat_base, idx)
                 attr_samples = text_feat_att.unsqueeze(1) + attr_feat_base.permute(1, 0, 2).contiguous()  # (Ka, N, D)
                 obj_samples = text_feat_obj.unsqueeze(1) + obj_feat_base.permute(1, 0, 2).contiguous()  # (Ko, N, D)
                 outputs.update({
@@ -533,8 +455,6 @@ class GenCSP(CSPInterface):
             [],
             [],
         )
-        if self.t2i > 0:
-            text_ft, text_rep = text_rep['text_ft'], text_rep['rep']
         if self.textdb is not None and self.num_xattn > 0:
             all_pairs = torch.concat(self.pairs_group)
             if all_pairs.size(0) > 30000: 
@@ -544,20 +464,6 @@ class GenCSP(CSPInterface):
                 text_features, text_feat_base = self.enhance_text_features(text_rep, all_pairs)
         else:
             text_features = text_rep.clone()
-        
-        if self.multi_path:
-            attr_token_tensor, objs_token_tensor, attr_token, objs_token = self.construct_multipath_tokens()
-            text_feat_att, _ = self.text_encoder(attr_token, attr_token_tensor, enable_pos_emb=self.enable_pos_emb)  # (115,D)
-            text_feat_obj, _ = self.text_encoder(objs_token, objs_token_tensor, enable_pos_emb=self.enable_pos_emb)  # (245,D)
-            # feature enhancement
-            attr_feat_base, obj_feat_base = self.decompose_text_base(text_feat_base, all_pairs)
-            text_feat_att = self.cross_attention_att(text_feat_att.type(torch.float), 
-                                                    attr_feat_base.type(torch.float)).type(self.dtype)  # (115, D)
-            text_feat_obj = self.cross_attention_obj(text_feat_obj.type(torch.float), 
-                                                    obj_feat_base.type(torch.float)).type(self.dtype)  # (245, D)
-            # aggregate 
-            attr_idx, obj_idx = all_pairs[:, 0], all_pairs[:, 1]
-            text_features = torch.stack([text_features, text_feat_att[attr_idx], text_feat_obj[obj_idx]], dim=-1).mean(dim=-1)
         
         if not self.no_comp:
             # divide the text features into group for classification in large semantic space
@@ -571,8 +477,7 @@ class GenCSP(CSPInterface):
         
         if self.disentangle and self.fusion:
             all_pairs = torch.concat(self.pairs_group)
-            if not self.multi_path:
-                text_feat_att, text_feat_obj = self.decompose_texts(text_features, all_pairs)
+            text_feat_att, text_feat_obj = self.decompose_texts(text_features, all_pairs)
 
         all_logits = torch.Tensor()
         with torch.no_grad():
@@ -585,23 +490,14 @@ class GenCSP(CSPInterface):
                 if self.num_aug > 0:
                     # get visual features of all views
                     _, num_views, c, h, w = batch_img.size()
-                    views_feat, img_ft = self.visual(batch_img.view(-1, c, h, w).type(self.dtype), self.t2i > 0)   ## (B, 768), (257, B, 1024)
+                    views_feat, img_ft = self.visual(batch_img.view(-1, c, h, w).type(self.dtype), False)   ## (B, 768), (257, B, 1024)
                     views_feat = views_feat.view(-1, num_views, views_feat.size(-1))
                     # cross attention
                     visual_res = self.cross_attention_img(views_feat[:, 0].type(torch.float), 
                                                         views_feat[:, 1:].permute(1, 0, 2).contiguous().type(torch.float))
                     feat_visual = views_feat[:, 0] + visual_res.type(self.dtype)
-                    if self.t2i > 0:
-                        num_patches, dim_patches = img_ft.size()[0], img_ft.size()[-1]
-                        img_ft =  img_ft.view(num_patches, -1, num_views, dim_patches)[:, :, 0]  # (257, B, 1024), keep the original view
                 else:
-                    feat_visual, img_ft = self.visual(batch_img.type(self.dtype), self.t2i > 0)   ## (B, 768), (257, B, 1024)
-                
-                if self.t2i > 0:
-                    feat_img_fuse, feat_text_fuse = self.t2i_fusion(img_ft, text_ft, torch.concat(self.pairs_group))
-                    feat_visual = self.t2i * feat_visual + (1 - self.t2i) * feat_img_fuse
-                    classifier_group = [self.t2i * classifier + (1 - self.t2i) * feat_text_fuse[pspe[0]: pspe[1]] 
-                                        for pspe, classifier in zip(pspes, classifier_group)]
+                    feat_visual, img_ft = self.visual(batch_img.type(self.dtype), False)   ## (B, 768), (257, B, 1024)
                 
                 if not self.no_comp:
                     # for large combinational semantic space, we compute the logits by groups
@@ -610,14 +506,9 @@ class GenCSP(CSPInterface):
                 
                 # logits fusion
                 if self.disentangle and self.fusion:
-                    if self.adapter and self.adapter == 'caila':
-                        input_img = batch_img[:, 0].view(-1, c, h, w) if self.num_aug > 0 else batch_img
-                        vis_feat_att, _ = self.visual(input_img.type(self.dtype), mode='attr')
-                        vis_feat_obj, _ = self.visual(input_img.type(self.dtype), mode='obj')
-                    else:
-                        # decompose visual features of attributes and objects
-                        vis_feat_att = self.mlp_att(feat_visual.type(torch.float))
-                        vis_feat_obj = self.mlp_obj(feat_visual.type(torch.float))
+                    # decompose visual features of attributes and objects
+                    vis_feat_att = self.mlp_att(feat_visual.type(torch.float))
+                    vis_feat_obj = self.mlp_obj(feat_visual.type(torch.float))
                     # compute cosine similarity logits
                     logits_att = self.compute_logits(text_feat_att, vis_feat_att.type(self.dtype), scale, norm=True)
                     logits_obj = self.compute_logits(text_feat_obj, vis_feat_obj.type(self.dtype), scale, norm=True)

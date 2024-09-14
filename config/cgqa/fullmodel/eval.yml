@@ -1,6 +1,6 @@
 dataset: cgqa
 clip_model: ViT-L/14
-ckpt_file: output/cgqa/fullmodel_tunevit_opt/checkpoints/model_2.pt
+ckpt_file: output/cgqa/fullmodel/checkpoints/best_model.pt
 eval_batch_size: 64
 context_length: 8
 text_db: 'opt_sentences64_all_pairs_open.pkl'

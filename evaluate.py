@@ -53,15 +53,12 @@ def get_text_representations(model, dataset, config, norm=True, get_feat=False):
     # get text representations
     text_rep = None  # conditioned on images
     # these three methods need to divide the attr-obj pairs into groups
-    if config.experiment_name in ['condcsp', 'condcsp_proda', 'dfsp', 'gencsp']:
+    if config.experiment_name in ['gencsp']:
         model.set_pairs_group(dataset)
     # these three methods rely on images to compute text representations
-    if not config.experiment_name in ['condcsp', 'condcsp_proda', 'dfsp', 'gencsp']:
-        # these two methods needs unnormalized text features
-        norm = False if config.experiment_name in ['hypercsp'] else True
-        text_rep = model.compute_text_representations(dataset, norm=norm)
+    if not config.experiment_name in ['gencsp']:
+        text_rep = model.compute_text_representations(dataset, norm=True)
     if config.experiment_name == 'gencsp':
-        get_feat = getattr(config, 't2i', 0) > 0 or get_feat
         text_rep = model.compute_text_representations(dataset, norm=False, get_feat=get_feat)
     return text_rep
 
@@ -110,8 +107,6 @@ def eval_valset(model, val_text_rep, val_dataset, config, feasibility=None, prin
     # instantiate an evaluator
     evaluator = Evaluator(val_dataset)
     drop_last = False
-    if config.experiment_name in ['condcsp', 'condcsp_proda', 'dfsp']:
-        drop_last = True
     dataloader = DataLoader(val_dataset, batch_size=config.eval_batch_size, shuffle=False, \
                             drop_last=drop_last, num_workers=config.num_workers, pin_memory=config.pin_memory)
 

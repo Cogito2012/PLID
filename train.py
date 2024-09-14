@@ -11,7 +11,7 @@ from torch.utils.data.dataloader import DataLoader
 from datasets.composition_dataset import CompositionDataset
 from datasets.read_datasets import DATASET_PATHS
 from models.compositional_modules import get_model
-from models.losses import CELoss, ProDALoss, CVAELoss, AdaMarginLoss, DFSPLoss, HyperCSPLoss, GenCSPLoss
+from models.losses import GenCSPLoss
 from models.scheduler import CustomCosineAnnealingWarmupRestarts
 from utils import set_seed, get_config
 from evaluate import eval_valset, get_text_representations, load_feasibilities
@@ -36,49 +36,21 @@ def get_lr_scheduler(optimizer, config):
 
 
 def get_loss_fn(model, config):
-    loss_name = getattr(config, 'loss', 'CELoss')
-    margin_cfg = {'margin': config.margin, 'factor': config.loss_margin} if getattr(config, 'with_margin', False) else None
     group_cfg = {'w_attr': config.w_attr, 'w_obj': config.w_obj} if getattr(config, 'with_group', False) else None
-    if loss_name == 'ProDALoss':
-        lambda_ = getattr(config, 'loss_lambda', 0.)
-        group_gauss = getattr(config, 'group_gauss', False)
-        loss_fn = ProDALoss(lambda_=lambda_, margin_cfg=margin_cfg, group_gauss=group_gauss)
-    elif loss_name == 'CELoss':
-        loss_fn = CELoss(margin_cfg=margin_cfg, group_cfg=group_cfg)
-    elif loss_name == 'CVAELoss':
-        recon_method = getattr(config, 'recon_method', 'mse')
-        cond_mode = getattr(config, 'cond_mode', 't2i')
-        logits_fusion = getattr(config, 'logits_fusion', False)
-        loss_fn = CVAELoss(recon_method, cond_mode, logits_fusion, loss_recon=config.loss_recon, loss_kld=config.loss_kld)
-    elif loss_name == 'AdaMarginLoss':
-        if hasattr(config, 's'):
-            model.clip_model.logit_scale.data = torch.tensor(config.s).log()
-        loss_fn = AdaMarginLoss(m=getattr(config, 'm', 0.4), 
-                                h=getattr(config, 'h', 0.333), 
-                                s=model.clip_model.logit_scale.exp(), 
-                                t_alpha=getattr(config, 't_alpha', 0.01), 
-                                tune_temp=getattr(config, 'tune_temp', False), eps=model.eps).to(model.device)
-    elif loss_name == 'DFSPLoss':
-        loss_fn = DFSPLoss(group_cfg=group_cfg, w_sp=config.w_sp)
-    
-    elif loss_name == 'HyperCSPLoss':
-        loss_fn = HyperCSPLoss(reg=getattr(config, 'loss_reg', 0.5))
-    
-    elif loss_name == 'GenCSPLoss':
-        use_gauss = getattr(config, 'use_gauss', False)
-        use_attrobj_gauss = getattr(config, 'use_attrobj_gauss', False)
-        group_gauss = getattr(config, 'group_gauss', False)
-        ls = getattr(config, 'label_smooth', 0.0)
-        partial_smooth = getattr(config, 'partial_smooth', False)
-        disentangle = getattr(config, 'disentangle', False)
-        if disentangle: group_cfg.update({'w_indep': getattr(config, 'w_indep', [0.0, 0.0])})
-        loss_fn = GenCSPLoss(use_gauss=use_gauss, 
-                             use_attrobj_gauss=use_attrobj_gauss, 
-                             group_gauss=group_gauss,
-                             group_cfg=group_cfg, 
-                             disentangle=disentangle, 
-                             ls=ls, 
-                             partial_smooth=partial_smooth)
+    use_gauss = getattr(config, 'use_gauss', False)
+    use_attrobj_gauss = getattr(config, 'use_attrobj_gauss', False)
+    group_gauss = getattr(config, 'group_gauss', False)
+    ls = getattr(config, 'label_smooth', 0.0)
+    partial_smooth = getattr(config, 'partial_smooth', False)
+    disentangle = getattr(config, 'disentangle', False)
+    if disentangle: group_cfg.update({'w_indep': getattr(config, 'w_indep', [0.0, 0.0])})
+    loss_fn = GenCSPLoss(use_gauss=use_gauss, 
+                            use_attrobj_gauss=use_attrobj_gauss, 
+                            group_gauss=group_gauss,
+                            group_cfg=group_cfg, 
+                            disentangle=disentangle, 
+                            ls=ls, 
+                            partial_smooth=partial_smooth)
     return loss_fn, group_cfg
 
 
@@ -137,7 +109,7 @@ def train_epoch(model, train_dataloader, train_pairs, i, loss_fn, optimizer, con
         batch_img, batch_target = batch[0], batch[3]
         batch_target = batch_target.to(model.device)
         batch_img = batch_img.to(model.device, non_blocking=True)
-        if not config.experiment_name in ['dfsp', 'gencsp']:
+        if not config.experiment_name in ['gencsp']:
             batch_img = model.encode_image(batch_img)
 
         outputs = model(batch_img, train_pairs)
@@ -251,39 +223,6 @@ def train_model(model, optimizer, train_dataset, val_dataset, config, device, ck
             print('Model has been saved: {}\n'.format(ckpt_file))
 
     return model, best_metric
-
-
-def save_soft_embeddings(model, config, epoch=None):
-    """Function to save soft embeddings.
-
-    Args:
-        model (nn.Module): the CSP/COOP module
-        config (argparse.ArgumentParser): the config
-        epoch (int, optional): epoch number for the soft embedding.
-            Defaults to None.
-    """
-    if not os.path.exists(config.save_path):
-        os.makedirs(config.save_path)
-
-    # save the soft embedding
-    with torch.no_grad():
-        if epoch:
-            soft_emb_path = os.path.join(
-                config.save_path, f"soft_embeddings_epoch_{epoch}.pt"
-            )
-        else:
-            soft_emb_path = os.path.join(
-                config.save_path, "soft_embeddings.pt"
-            )
-        to_save = {"soft_embeddings": model.soft_embeddings}
-        if getattr(config, 'soft_label_embed', False):
-            to_save.update({'label_embeddings': model.label_embeddings})
-        
-        if getattr(config, 'cond_context', False):
-            to_save.update({'ctx_embeddings': model.soft_ctx_embeddings,
-                            'meta_net': model.meta_net.state_dict()})
-
-        torch.save(to_save, soft_emb_path)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 dataset: ut-zappos
 clip_model: ViT-L/14
-ckpt_file: output/ut-zappos/fullmodel_tunevit_t32_opt/checkpoints/model_4.pt
+ckpt_file: output/ut-zappos/fullmodel/checkpoints/best_model.pt
 eval_batch_size: 128
 context_length: 8
 text_db: 'opt_sentences64_all_pairs_open.pkl'
