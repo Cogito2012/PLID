@@ -1,0 +1,15 @@
+dataset: cgqa
+clip_model: ViT-L/14
+ckpt_file: output/cgqa/fullmodel_tunevit_opt/checkpoints/model_2.pt
+eval_batch_size: 64
+context_length: 8
+text_db: 'opt_sentences64_all_pairs_open.pkl'
+num_texts: 64
+num_aug: 8
+use_gauss: True
+with_group: True
+disentangle: True
+fusion: True
+fusion_factor: beta
+num_workers: 4
+pin_memory: True

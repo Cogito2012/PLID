@@ -1,0 +1,15 @@
+dataset: ut-zappos
+clip_model: ViT-L/14
+ckpt_file: output/ut-zappos/fullmodel_tunevit_t32_opt/checkpoints/model_4.pt
+eval_batch_size: 128
+context_length: 8
+text_db: 'opt_sentences64_all_pairs_open.pkl'
+num_texts: 32
+num_aug: 8
+use_gauss: True
+with_group: True
+disentangle: True
+fusion: True
+fusion_factor: beta
+num_workers: 4
+pin_memory: True
