@@ -25,7 +25,7 @@ Alternatively, you can use `pip install -r requirements.txt` to install all the 
 
 ## Download Dataset
 
-### Download raw data
+### 1) Download raw data
 We experiment with three datasets: MIT-States, UT-Zappos, and C-GQA.
 ```
 sh download_data.sh
@@ -34,11 +34,15 @@ sh download_data.sh
 If you already have setup the datasets, you can use symlink and ensure the following paths exist:
 `data/<dataset>` where `<datasets> = {'mit-states', 'ut-zappos', 'cgqa'}`.
 
-### Download text features and Glove feasibility scores
+### 2) Download text features and Glove feasibility scores
 
-:TODO
+In this [Gdrive folder](https://drive.google.com/drive/folders/1VkOShGND9DbOqZQyjwFM-gI4oMM-dWpM?usp=sharing), we provide LLM-generated text descriptions and corresponding CLIP text features, as well as the Glove feasibility scores used in evaluation. 
 
+ - By default, we use OPT-1.5B as the LLM so that only the files named as `opt_xxx.pkl` are required to download for reproducity.
 
+ - To try other LLMs (e.g., GPT-3.5, Mistral-7B), please refer to the scripts `text_augment.py` and `compute_db_features.py` in the folder `exp/` for text description generation and feature extraction.
+
+ - Keep folder structure unchanged for all downloaded files.
 
 ## Training
 ```
